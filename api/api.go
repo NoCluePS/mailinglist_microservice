@@ -1,4 +1,4 @@
-package jsonapi
+package api
 
 import (
 	"bytes"
@@ -7,9 +7,8 @@ import (
 	"errors"
 	"io"
 	"log"
+	"mailinglist/mdb"
 	"net/http"
-
-	"github.com/NoCluePS/mailinglist_api/mdb"
 )
 
 func setJsonHeader(w http.ResponseWriter) {
@@ -24,28 +23,25 @@ func fromJson[T any](body io.Reader, target T) {
 
 func returnJson[T any](w http.ResponseWriter, withData func() (T, error)) {
 	setJsonHeader(w)
-
-	data, servErr := withData()
-
-	if servErr != nil {
-		w.WriteHeader(500)
-		serverErrJson, err := json.Marshal(&servErr)
-
+	data, err := withData()
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		serverErrJson, err := json.Marshal(&err)
 		if err != nil {
-			log.Println(err)
-			return 
+			log.Print(err)
+			return
 		}
 
 		w.Write(serverErrJson)
 		return
 	}
-
+	
 	dataJson, err := json.Marshal(&data)
 
 	if err != nil {
 		log.Println(err)
-		w.WriteHeader(500)
-		return;
+		w.WriteHeader(http.StatusInternalServerError)
+		return
 	}
 
 	w.Write(dataJson)
@@ -53,20 +49,20 @@ func returnJson[T any](w http.ResponseWriter, withData func() (T, error)) {
 
 func returnError(w http.ResponseWriter, err error, code int) {
 	returnJson(w, func() (interface{}, error) {
-		errorMsg := struct {
+		errorMessage := struct {
 			Err string
 		}{
 			Err: err.Error(),
 		}
 		w.WriteHeader(code)
-		return errorMsg, nil
+		return errorMessage, nil
 	})
 }
 
 func CreateEmail(db *sql.DB) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if req.Method != "POST" {
-			returnError(w, errors.New("must be POST request"), 400)
+		if req.Method != http.MethodPost {
+			returnError(w, errors.New("not the correct request method"), 405)
 			return
 		}
 
@@ -75,6 +71,7 @@ func CreateEmail(db *sql.DB) http.Handler {
 
 		if err := mdb.CreateEmail(db, entry.Email); err != nil {
 			returnError(w, err, 400)
+			return
 		}
 
 		returnJson(w, func() (interface{}, error) {
@@ -86,8 +83,8 @@ func CreateEmail(db *sql.DB) http.Handler {
 
 func GetEmail(db *sql.DB) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if req.Method != "GET" {
-			returnError(w, errors.New("must be GET request"), 400)
+		if req.Method != http.MethodGet {
+			returnError(w, errors.New("not the correct request method"), 405)
 			return
 		}
 
@@ -101,10 +98,10 @@ func GetEmail(db *sql.DB) http.Handler {
 	})
 }
 
-func GetEmailBatch(db *sql.DB) http.Handler {
+func GetBatchEmail(db *sql.DB) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if req.Method != "GET" {
-			returnError(w, errors.New("must be GET request"), 400)
+		if req.Method != http.MethodGet {
+			returnError(w, errors.New("not the correct request method"), 405)
 			return
 		}
 
@@ -112,11 +109,12 @@ func GetEmailBatch(db *sql.DB) http.Handler {
 		fromJson(req.Body, &queryOptions)
 
 		if queryOptions.Count <= 0 || queryOptions.Page <= 0 {
-			returnError(w, errors.New("page and count fields are required, must be > 0"), 400)
+			returnError(w, errors.New("invalid count or page"), 400)
+			return
 		}
 
 		returnJson(w, func() (interface{}, error) {
-			log.Printf("JSON GetEmailBatch: %v\n",queryOptions)
+			log.Printf("JSON GetEmailBatch: %v/%v\n", queryOptions.Page, queryOptions.Count)
 			return mdb.GetEmailBatch(db, queryOptions)
 		})
 	})
@@ -124,8 +122,8 @@ func GetEmailBatch(db *sql.DB) http.Handler {
 
 func UpdateEmail(db *sql.DB) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if req.Method != "PUT" {
-			returnError(w, errors.New("must be PUT request"), 400)
+		if req.Method != http.MethodPut {
+			returnError(w, errors.New("not the correct request method"), 405)
 			return
 		}
 
@@ -134,6 +132,7 @@ func UpdateEmail(db *sql.DB) http.Handler {
 
 		if err := mdb.UpdateEmail(db, entry); err != nil {
 			returnError(w, err, 400)
+			return
 		}
 
 		returnJson(w, func() (interface{}, error) {
@@ -143,11 +142,10 @@ func UpdateEmail(db *sql.DB) http.Handler {
 	})
 }
 
-
 func DeleteEmail(db *sql.DB) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if req.Method != "DELETE" {
-			returnError(w, errors.New("must be DELETE request"), 400)
+		if req.Method != http.MethodDelete {
+			returnError(w, errors.New("not the correct request method"), 405)
 			return
 		}
 
@@ -156,6 +154,7 @@ func DeleteEmail(db *sql.DB) http.Handler {
 
 		if err := mdb.DeleteEmail(db, entry.Email); err != nil {
 			returnError(w, err, 400)
+			return
 		}
 
 		returnJson(w, func() (interface{}, error) {
@@ -165,28 +164,14 @@ func DeleteEmail(db *sql.DB) http.Handler {
 	})
 }
 
-func Hello() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		returnJson(w, func() (interface{}, error) {
-			return struct {
-				Message string
-			} {
-				Message: "Hello, people of the internet!",
-			}, nil
-		})
-	})
-}
-
 func Serve(db *sql.DB, bind string) {
-	http.Handle("/", Hello())
 	http.Handle("/email/create", CreateEmail(db))
 	http.Handle("/email/get", GetEmail(db))
-	http.Handle("/email/get/batch", GetEmailBatch(db))
+	http.Handle("/email/get/batch", GetBatchEmail(db))
 	http.Handle("/email/update", UpdateEmail(db))
 	http.Handle("/email/delete", DeleteEmail(db))
-	log.Printf("JSON API serve listening on %v\n", bind)
-	err := http.ListenAndServe(bind, nil)
-	if err != nil {
+	log.Printf("JSON server listening on port %v\n", bind)
+	if err := http.ListenAndServe(bind, nil); err != nil {
 		log.Fatalf("JSON server error: %v\n", err)
 	}
 }
